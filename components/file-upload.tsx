@@ -2,91 +2,127 @@
 
 import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
-import { Upload } from "lucide-react";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { storage } from "@/lib/firebase";
-import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "sonner";
+import { Cloud, File, Loader2 } from "lucide-react";
 
 interface FileUploadProps {
-  onUploadStart: () => void;
-  onUploadComplete: () => void;
+  onSuccess?: () => void;
 }
 
-export function FileUpload({ onUploadStart, onUploadComplete }: FileUploadProps) {
+export function FileUpload({ onSuccess }: FileUploadProps) {
+  const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const { toast } = useToast();
 
-  const onDrop = useCallback(async (acceptedFiles: File[]) => {
-    try {
-      onUploadStart();
-      
-      for (const file of acceptedFiles) {
-        const storageRef = ref(storage, `files/${Date.now()}-${file.name}`);
-        
-        // Upload file to Firebase Storage
-        await uploadBytes(storageRef, file);
-        const downloadURL = await getDownloadURL(storageRef);
-        
-        // Save file metadata to database
-        await fetch("/api/files", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            title: file.name,
-            url: downloadURL,
-          }),
-        });
+  const onDrop = useCallback(
+    async (acceptedFiles: File[]) => {
+      try {
+        setUploading(true);
+        setUploadProgress(0);
 
-        setUploadProgress(100);
-        toast({
-          title: "Success",
-          description: "File uploaded successfully",
-        });
+        for (const file of acceptedFiles) {
+          const formData = new FormData();
+          formData.append("file", file);
+
+          const xhr = new XMLHttpRequest();
+          xhr.upload.addEventListener("progress", (event) => {
+            if (event.lengthComputable) {
+              const progress = Math.round((event.loaded * 100) / event.total);
+              setUploadProgress(progress);
+            }
+          });
+
+          const response = await new Promise((resolve, reject) => {
+            xhr.open("POST", "/api/cloudinary/upload");
+            xhr.onload = () => resolve(xhr.response);
+            xhr.onerror = () => reject(xhr.statusText);
+            xhr.send(formData);
+          });
+
+          const data = JSON.parse(response as string);
+          if (!data.success) throw new Error(data.error || "Upload failed");
+        }
+
+        toast.success("Files uploaded successfully");
+        onSuccess?.();
+      } catch (error) {
+        console.error("Upload error:", error);
+        toast.error("Failed to upload files");
+      } finally {
+        setUploading(false);
+        setUploadProgress(0);
       }
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to upload file",
-        variant: "destructive",
-      });
-    } finally {
-      onUploadComplete();
-      setUploadProgress(0);
-    }
-  }, [onUploadStart, onUploadComplete, toast]);
+    },
+    [onSuccess]
+  );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: {
-      'application/pdf': ['.pdf'],
-      'application/vnd.ms-excel': ['.xls'],
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx']
-    }
+      "application/pdf": [".pdf"],
+      "application/vnd.ms-excel": [".xls"],
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [
+        ".xlsx",
+      ],
+    },
+    disabled: uploading,
+    maxSize: 10000000, // 10MB
   });
 
   return (
-    <div>
-      <div
-        {...getRootProps()}
-        className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors
-          ${isDragActive ? "border-primary bg-primary/10" : "border-muted-foreground/25"}`}
-      >
-        <input {...getInputProps()} />
-        <Upload className="mx-auto h-12 w-12 text-muted-foreground" />
-        <p className="mt-2 text-sm text-muted-foreground">
-          Drag & drop PDF or Excel files here, or click to select files
-        </p>
+    <div
+      {...getRootProps()}
+      className={`
+        relative rounded-lg border-2 border-dashed p-8 transition-colors
+        ${
+          isDragActive
+            ? "border-primary bg-primary/5"
+            : "border-muted-foreground/25 hover:border-primary/50"
+        }
+        ${uploading ? "pointer-events-none opacity-60" : "cursor-pointer"}
+      `}
+    >
+      <input {...getInputProps()} />
+      <div className="flex flex-col items-center justify-center space-y-4 text-center">
+        {uploading ? (
+          <>
+            <div className="relative h-12 w-12">
+              <div className="absolute top-0 left-0 h-full w-full rounded-full border-4 border-primary/20"></div>
+              <div
+                className="absolute top-0 left-0 h-full w-full rounded-full border-4 border-primary border-t-transparent animate-spin"
+                style={{
+                  clipPath: `polygon(0 0, 100% 0, 100% ${uploadProgress}%, 0 ${uploadProgress}%)`,
+                }}
+              ></div>
+            </div>
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Uploading files...</p>
+              <p className="text-xs text-muted-foreground">{uploadProgress}%</p>
+            </div>
+          </>
+        ) : isDragActive ? (
+          <>
+            <Cloud className="h-10 w-10 text-primary animate-bounce" />
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Drop the files here</p>
+              <p className="text-xs text-muted-foreground">
+                Files will be uploaded immediately
+              </p>
+            </div>
+          </>
+        ) : (
+          <>
+            <File className="h-10 w-10 text-muted-foreground" />
+            <div className="space-y-2">
+              <p className="text-sm font-medium">
+                Drag & drop files here, or click to select files
+              </p>
+              <p className="text-xs text-muted-foreground">
+                PDF, XLS, XLSX up to 10MB
+              </p>
+            </div>
+          </>
+        )}
       </div>
-      
-      {uploadProgress > 0 && (
-        <div className="mt-4">
-          <Progress value={uploadProgress} className="h-2" />
-        </div>
-      )}
     </div>
   );
 }
